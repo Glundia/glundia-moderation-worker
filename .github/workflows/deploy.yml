@@ -24,6 +24,9 @@ jobs:
   build:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       image-tag: ${{ steps.build.outputs.image-tag }}
       full-image: ${{ steps.build.outputs.full-image }}
@@ -83,6 +86,9 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     environment:
       name: dev
     steps:
@@ -112,6 +118,9 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     environment:
       name: prod
     steps:
