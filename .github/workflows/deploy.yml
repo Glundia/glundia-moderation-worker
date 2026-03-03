@@ -29,8 +29,8 @@ jobs:
       contents: read
       id-token: write
     outputs:
-      image-tag: ${{ steps.build.outputs.image-tag }}
-      full-image: ${{ steps.build.outputs.full-image }}
+      image-tag: ${{ steps.tag.outputs.image-tag }}
+      full-image: ${{ steps.build-dev.outputs.full-image || steps.build-prod.outputs.full-image }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -40,7 +40,7 @@ jobs:
         run: echo "sha=${{ github.sha }}" >> $GITHUB_OUTPUT
 
       - name: Determine image tag
-        id: build
+        id: tag
         run: |
           if [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
             echo "image-tag=develop-${{ steps.sha.outputs.sha }}" >> $GITHUB_OUTPUT
@@ -69,20 +69,22 @@ jobs:
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
       - name: Build and push Docker image (DEV)
+        id: build-dev
         if: github.ref == 'refs/heads/develop'
         run: |
           PROJECT_ID=${{ secrets.GCP_PROJECT_ID_DEV }}
-          docker build -t ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }} .
-          docker push ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }}
-          echo "full-image=${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }}" >> $GITHUB_OUTPUT
+          docker build -t ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.tag.outputs.image-tag }} .
+          docker push ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.tag.outputs.image-tag }}
+          echo "full-image=${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.tag.outputs.image-tag }}" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image (PROD)
+        id: build-prod
         if: github.ref == 'refs/heads/main'
         run: |
           PROJECT_ID=${{ secrets.GCP_PROJECT_ID_PROD }}
-          docker build -t ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }} .
-          docker push ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }}
-          echo "full-image=${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }}" >> $GITHUB_OUTPUT
+          docker build -t ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.tag.outputs.image-tag }} .
+          docker push ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.tag.outputs.image-tag }}
+          echo "full-image=${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.tag.outputs.image-tag }}" >> $GITHUB_OUTPUT
 
   deploy-dev:
     name: Deploy to DEV
@@ -114,7 +116,8 @@ jobs:
             --min-instances=0 \
             --max-instances=10 \
             --timeout=300 \
-            --set-env-vars=GCP_PROJECT=${{ secrets.GCP_PROJECT_ID_DEV }},ENVIRONMENT=dev,PUBSUB_SUBSCRIPTION=moderation-worker-sub,QUARANTINE_BUCKET=glundia-dev-uploads-quarantine,PUBLIC_BUCKET=glundia-dev-images-public,REJECTED_BUCKET=glundia-dev-images-rejected,DATABASE_URL=${{ secrets.DEV_DATABASE_URL }}
+            --set-env-vars=GCP_PROJECT=${{ secrets.GCP_PROJECT_ID_DEV }},ENVIRONMENT=dev,PUBSUB_SUBSCRIPTION=moderation-worker-sub,QUARANTINE_BUCKET=${{ secrets.GCP_PROJECT_ID_DEV }}-uploads-quarantine,PUBLIC_BUCKET=${{ secrets.GCP_PROJECT_ID_DEV }}-images-public,REJECTED_BUCKET=${{ secrets.GCP_PROJECT_ID_DEV }}-images-rejected \
+            --update-secrets=DATABASE_URL=database-url:latest
 
   deploy-prod:
     name: Deploy to PROD
@@ -146,7 +149,8 @@ jobs:
             --min-instances=1 \
             --max-instances=100 \
             --timeout=300 \
-            --set-env-vars=GCP_PROJECT=${{ secrets.GCP_PROJECT_ID_PROD }},ENVIRONMENT=prod,PUBSUB_SUBSCRIPTION=moderation-worker-sub,QUARANTINE_BUCKET=glundia-prod-uploads-quarantine,PUBLIC_BUCKET=glundia-prod-images-public,REJECTED_BUCKET=glundia-prod-images-rejected,DATABASE_URL=${{ secrets.PROD_DATABASE_URL }}
+            --set-env-vars=GCP_PROJECT=${{ secrets.GCP_PROJECT_ID_PROD }},ENVIRONMENT=prod,PUBSUB_SUBSCRIPTION=moderation-worker-sub,QUARANTINE_BUCKET=${{ secrets.GCP_PROJECT_ID_PROD }}-uploads-quarantine,PUBLIC_BUCKET=${{ secrets.GCP_PROJECT_ID_PROD }}-images-public,REJECTED_BUCKET=${{ secrets.GCP_PROJECT_ID_PROD }}-images-rejected \
+            --update-secrets=DATABASE_URL=database-url:latest
 
   test:
     name: Run Tests
