@@ -1,0 +1,8 @@
+{
+  "message": {
+    "data": "eyJpbWFnZV9pZCI6IjEyMzQ1NjctZTg5Yi0xMmQzLWE0NTYtNDI2NjE0MTc0MDAwIiwgImdjc191cmkiOiAiZ3M6Ly9nbHVuZGlhLWRldi11cGxvYWRzLXF1YXJhbnRpbmUvdXNlci1pbWFnZS5qcGciLCAidXBsb2FkZWRfYnkiOiAiMTIzNDU2Ny1lODliLTEyZDMtYTQ1Ni00MjY2MTQxNzQwMDAiLCAidGltZXN0YW1wIjogIjIwMjYtMDEtMDFUMDA6MDA6MDBaIn0=",
+    "messageId": "1234567890",
+    "publishTime": "2026-01-01T00:00:00.000Z"
+  },
+  "subscription": "projects/glundia-dev/subscriptions/moderation-worker-sub"
+}
