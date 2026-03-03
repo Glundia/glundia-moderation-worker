@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 
 from config import settings
 from database_client import DatabaseClient
-from models import ModerationResult, PubsubPushRequest, UploadEvent
+from models import GcsObjectMetadata, ModerationResult, PubsubPushRequest, UploadEvent
 from storage_client import StorageClient
 from vision_client import VisionClient
 
@@ -85,7 +85,9 @@ async def process_upload(request: PubsubPushRequest) -> JSONResponse:
     Process an image upload event from Pub/Sub.
 
     This endpoint is called by Cloud Pub/Sub when a new image
-    is uploaded to the quarantine bucket.
+    is uploaded to the quarantine bucket. Supports both:
+    - GCS notification format (direct from GCS bucket)
+    - Custom UploadEvent format (from API)
 
     Args:
         request: Pub/Sub push request containing the upload event
@@ -96,13 +98,38 @@ async def process_upload(request: PubsubPushRequest) -> JSONResponse:
     try:
         # Decode the message data
         message_data = json.loads(base64.b64decode(request.message.data).decode())
-        upload_event = UploadEvent(**message_data)
+        
+        # Detect message format and extract relevant data
+        if "kind" in message_data and message_data.get("kind") == "storage#object":
+            # GCS notification format
+            gcs_metadata = GcsObjectMetadata(**message_data)
+            gcs_uri = f"gs://{gcs_metadata.bucket}/{gcs_metadata.name}"
+            image_id = None  # Will be looked up from filename or database
+            uploaded_by = None
+            timestamp = gcs_metadata.timeCreated
+            
+            logger.info(f"Processing GCS notification for: {gcs_uri}")
+            
+            # Try to extract image_id from filename (e.g., "uploads/IMAGE_ID.jpg")
+            # For now, we'll use the GCS object name as a placeholder
+            # TODO: In Phase 3, the API should set custom metadata with image_id
+            filename_parts = gcs_metadata.name.split("/")
+            image_id = filename_parts[-1].split(".")[0] if filename_parts else gcs_metadata.name
+            
+        else:
+            # Custom UploadEvent format from API
+            upload_event = UploadEvent(**message_data)
+            gcs_uri = upload_event.gcs_uri
+            image_id = upload_event.image_id
+            uploaded_by = upload_event.uploaded_by
+            timestamp = upload_event.timestamp
+            
+            logger.info(f"Processing custom upload event for image: {image_id}")
 
-        logger.info(f"Processing image: {upload_event.image_id}")
-        logger.info(f"GCS URI: {upload_event.gcs_uri}")
+        logger.info(f"GCS URI: {gcs_uri}")
 
         # Step 1: Analyze image with Vision API
-        vision_result = vision_client.analyze_image(upload_event.gcs_uri)
+        vision_result = vision_client.analyze_image(gcs_uri)
 
         logger.info(f"Vision API result: approved={vision_result['approved']}")
 
@@ -118,30 +145,35 @@ async def process_upload(request: PubsubPushRequest) -> JSONResponse:
 
         # Step 3: Move image to appropriate bucket
         new_uri = storage_client.move_blob(
-            source_uri=upload_event.gcs_uri,
+            source_uri=gcs_uri,
             destination_bucket=destination_bucket,
         )
 
         logger.info(f"Moved image to: {new_uri}")
 
-        # Step 4: Update database
-        db_client.update_moderation_status(
-            image_id=upload_event.image_id,
-            status=status,
-            rejection_reason=rejection_reason,
-            safe_search_result=vision_result.get("result"),
-        )
+        # Step 4: Update database (only if image_id is valid UUID)
+        if image_id and len(image_id) > 10:  # Basic check for UUID-like format
+            try:
+                db_client.update_moderation_status(
+                    image_id=image_id,
+                    status=status,
+                    rejection_reason=rejection_reason,
+                    safe_search_result=vision_result.get("result"),
+                )
+                logger.info(f"Updated database for image {image_id}")
+            except Exception as db_error:
+                logger.warning(f"Could not update database: {db_error}")
 
         # Step 5: Create result
         result = ModerationResult(
-            image_id=upload_event.image_id,
+            image_id=image_id or "unknown",
             status=status,
             safe_search=vision_result.get("result"),
             rejection_reason=rejection_reason,
             moved_to_bucket=destination_bucket,
         )
 
-        logger.info(f"Successfully processed image {upload_event.image_id}: {status}")
+        logger.info(f"Successfully processed image {image_id}: {status}")
 
         return JSONResponse(
             content={
