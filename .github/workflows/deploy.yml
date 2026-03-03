@@ -30,7 +30,7 @@ jobs:
       id-token: write
     outputs:
       image-tag: ${{ steps.tag.outputs.image-tag }}
-      full-image: ${{ steps.build-dev.outputs.full-image || steps.build-prod.outputs.full-image }}
+      full-image: ${{ steps.set-image.outputs.full-image }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -85,6 +85,15 @@ jobs:
           docker build -t ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.tag.outputs.image-tag }} .
           docker push ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.tag.outputs.image-tag }}
           echo "full-image=${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.tag.outputs.image-tag }}" >> $GITHUB_OUTPUT
+
+      - name: Set output image
+        id: set-image
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+            echo "full-image=${{ steps.build-dev.outputs.full-image }}" >> $GITHUB_OUTPUT
+          else
+            echo "full-image=${{ steps.build-prod.outputs.full-image }}" >> $GITHUB_OUTPUT
+          fi
 
   deploy-dev:
     name: Deploy to DEV
