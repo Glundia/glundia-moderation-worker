@@ -1,0 +1,229 @@
+name: Build and Deploy Moderation Worker
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - prod
+
+env:
+  REGION: us-central1
+  SERVICE_NAME: moderation-worker
+
+jobs:
+  build:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.build.outputs.image-tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Get commit SHA
+        id: sha
+        run: echo "sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Determine image tag
+        id: build
+        run: |
+          # Tag format: develop-<sha> or v1.0.0
+          if [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+            echo "image-tag=develop-${{ steps.sha.outputs.sha }}" >> $GITHUB_OUTPUT
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "image-tag=latest" >> $GITHUB_OUTPUT
+            echo "environment=prod" >> $GITHUB_OUTPUT
+          else
+            echo "image-tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
+
+      - name: Build and push Docker image
+        run: |
+          PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}
+          REPO_NAME=${{ env.SERVICE_NAME }}
+          IMAGE_TAG=${{ steps.build.outputs.image-tag }}
+          
+          docker build -t ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/$SERVICE_NAME:$IMAGE_TAG .
+          docker push ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/$SERVICE_NAME:$IMAGE_TAG
+
+          echo "full-image=${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/$SERVICE_NAME:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+  deploy-dev:
+    name: Deploy to DEV
+    needs: build
+    if: github.ref == 'refs/heads/develop' || github.event.inputs.environment == 'dev'
+    runs-on: ubuntu-latest
+    environment:
+      name: dev
+      url: https://moderation-worker-682484616527.us-central1.run.app
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@v4
+        with:
+          repository: Glundia/glundia-infra
+          path: infra
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Update container image in Terraform
+        run: |
+          cd infra/environments/dev
+          
+          # Use sed to update the container image
+          sed -i 's|container_image = ".*"|container_image = "${{ needs.build.outputs.full-image }}"|' main.tf
+          
+          # Show the change
+          grep "container_image" main.tf
+
+      - name: Terraform Init
+        run: |
+          cd infra/environments/dev
+          terraform init -upgrade
+
+      - name: Terraform Plan
+        run: |
+          cd infra/environments/dev
+          terraform plan -var-file=dev.tfvars -out=tfplan
+        env:
+          TF_VAR_database_url: ${{ secrets.DEV_DATABASE_URL }}
+          TF_VAR_jwt_secret_key: ${{ secrets.DEV_JWT_SECRET }}
+          TF_VAR_firebase_project_id: ${{ secrets.DEV_FIREBASE_PROJECT_ID }}
+          TF_VAR_firebase_api_key: ${{ secrets.DEV_FIREBASE_API_KEY }}
+          TF_VAR_firebase_app_id: ${{ secrets.DEV_FIREBASE_APP_ID }}
+
+      - name: Terraform Apply
+        run: |
+          cd infra/environments/dev
+          terraform apply -auto-approve tfplan
+
+      - name: Deploy Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image=${{ needs.build.outputs.full-image }} \
+            --project=${{ secrets.GCP_PROJECT_ID }} \
+            --region=${{ env.REGION }} \
+            --platform=managed \
+            --service-account=moderation-worker@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com \
+            --memory=512Mi \
+            --cpu=1 \
+            --min-instances=0 \
+            --max-instances=10 \
+            --timeout=300 \
+            --set-env-vars=GCP_PROJECT=${{ secrets.GCP_PROJECT_ID }},ENVIRONMENT=dev,PUBSUB_SUBSCRIPTION=moderation-worker-sub,QUARANTINE_BUCKET=glundia-dev-uploads-quarantine,PUBLIC_BUCKET=glundia-dev-images-public,REJECTED_BUCKET=glundia-dev-images-rejected \
+            --no-traffic
+
+  deploy-prod:
+    name: Deploy to PROD
+    needs: build
+    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'prod'
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+      url: https://moderation-worker-prod.run.app
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@v4
+        with:
+          repository: Glundia/glundia-infra
+          path: infra
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY_PROD }}
+
+      - name: Update container image in Terraform
+        run: |
+          cd infra/environments/prod
+          
+          sed -i 's|container_image = ".*"|container_image = "${{ needs.build.outputs.full-image }}"|' main.tf
+
+      - name: Terraform Init
+        run: |
+          cd infra/environments/prod
+          terraform init -upgrade
+
+      - name: Terraform Plan
+        run: |
+          cd infra/environments/prod
+          terraform plan -var-file=prod.tfvars -out=tfplan
+        env:
+          TF_VAR_database_url: ${{ secrets.PROD_DATABASE_URL }}
+          TF_VAR_jwt_secret_key: ${{ secrets.PROD_JWT_SECRET }}
+          TF_VAR_firebase_project_id: ${{ secrets.PROD_FIREBASE_PROJECT_ID }}
+          TF_VAR_firebase_api_key: ${{ secrets.PROD_FIREBASE_API_KEY }}
+          TF_VAR_firebase_app_id: ${{ secrets.PROD_FIREBASE_APP_ID }}
+
+      - name: Terraform Apply
+        run: |
+          cd infra/environments/prod
+          terraform apply -auto-approve tfplan
+
+      - name: Deploy Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image=${{ needs.build.outputs.full-image }} \
+            --project=${{ secrets.GCP_PROJECT_ID_PROD }} \
+            --region=${{ env.REGION }} \
+            --platform=managed \
+            --service-account=moderation-worker@${{ secrets.GCP_PROJECT_ID_PROD }}.iam.gserviceaccount.com \
+            --memory=1Gi \
+            --cpu=2 \
+            --min-instances=1 \
+            --max-instances=100 \
+            --timeout=300 \
+            --set-env-vars=GCP_PROJECT=${{ secrets.GCP_PROJECT_ID_PROD }},ENVIRONMENT=prod,PUBSUB_SUBSCRIPTION=moderation-worker-sub,QUARANTINE_BUCKET=glundia-prod-uploads-quarantine,PUBLIC_BUCKET=glundia-prod-images-public,REJECTED_BUCKET=glundia-prod-images-rejected \
+            --no-traffic
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+
+      - name: Run unit tests
+        run: pytest tests/unit/ -v --cov=. --cov-report=xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          flags: unittests
