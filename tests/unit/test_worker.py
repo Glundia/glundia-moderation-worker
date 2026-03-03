@@ -57,15 +57,19 @@ class TestModels:
 class TestVisionClient:
     """Test Vision API client."""
 
-    def test_vision_client_init(self):
+    @patch("vision_client.vision.ImageAnnotatorClient")
+    def test_vision_client_init(self, mock_client_class):
         """Test VisionClient initialization."""
         client = VisionClient(threshold=0.8)
         assert client.threshold == 0.8
+        mock_client_class.assert_called_once()
 
-    def test_vision_client_default_threshold(self):
+    @patch("vision_client.vision.ImageAnnotatorClient")
+    def test_vision_client_default_threshold(self, mock_client_class):
         """Test default threshold."""
         client = VisionClient()
         assert client.threshold == 0.7
+        mock_client_class.assert_called_once()
 
     @patch("vision_client.vision.ImageAnnotatorClient")
     def test_analyze_image_safe(self, mock_client_class):
