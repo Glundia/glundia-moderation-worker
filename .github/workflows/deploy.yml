@@ -19,6 +19,7 @@ on:
 env:
   REGION: us-central1
   SERVICE_NAME: moderation-worker
+  AR_REPO: glundia-moderation-worker
 
 jobs:
   build:
@@ -54,6 +55,7 @@ jobs:
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER_DEV }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT_DEV }}
+          token_format: access_token
 
       - name: Authenticate to Google Cloud (PROD)
         if: github.ref == 'refs/heads/main'
@@ -61,6 +63,7 @@ jobs:
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER_PROD }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT_PROD }}
+          token_format: access_token
 
       - name: Configure Docker
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
@@ -69,17 +72,17 @@ jobs:
         if: github.ref == 'refs/heads/develop'
         run: |
           PROJECT_ID=${{ secrets.GCP_PROJECT_ID_DEV }}
-          docker build -t ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.SERVICE_NAME }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }} .
-          docker push ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.SERVICE_NAME }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }}
-          echo "full-image=${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.SERVICE_NAME }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }}" >> $GITHUB_OUTPUT
+          docker build -t ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }} .
+          docker push ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }}
+          echo "full-image=${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }}" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image (PROD)
         if: github.ref == 'refs/heads/main'
         run: |
           PROJECT_ID=${{ secrets.GCP_PROJECT_ID_PROD }}
-          docker build -t ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.SERVICE_NAME }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }} .
-          docker push ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.SERVICE_NAME }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }}
-          echo "full-image=${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.SERVICE_NAME }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }}" >> $GITHUB_OUTPUT
+          docker build -t ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }} .
+          docker push ${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }}
+          echo "full-image=${{ env.REGION }}-docker.pkg.dev/$PROJECT_ID/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image-tag }}" >> $GITHUB_OUTPUT
 
   deploy-dev:
     name: Deploy to DEV
