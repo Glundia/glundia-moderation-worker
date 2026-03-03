@@ -46,15 +46,15 @@ class StorageClient:
         source_bucket = self.client.bucket(source_bucket_name)
         source_blob = source_bucket.blob(source_blob_name)
 
-        destination_bucket = self.client.bucket(destination_bucket)
+        destination_bucket_obj = self.client.bucket(destination_bucket)
         destination_blob = source_bucket.copy_blob(
-            source_blob, destination_bucket, destination_blob_name
+            source_blob, destination_bucket_obj, destination_blob_name
         )
 
         # Delete from source
         source_blob.delete()
 
-        return f"gs://{destination_bucket_name}/{destination_blob_name}"
+        return f"gs://{destination_bucket}/{destination_blob_name}"
 
     def copy_blob(
         self,
@@ -87,12 +87,12 @@ class StorageClient:
         source_bucket = self.client.bucket(source_bucket_name)
         source_blob = source_bucket.blob(source_blob_name)
 
-        destination_bucket = self.client.bucket(destination_bucket)
+        destination_bucket_obj = self.client.bucket(destination_bucket)
         destination_blob = source_bucket.copy_blob(
-            source_blob, destination_bucket, destination_blob_name
+            source_blob, destination_bucket_obj, destination_blob_name
         )
 
-        return f"gs://{destination_bucket_name}/{destination_blob_name}"
+        return f"gs://{destination_bucket}/{destination_blob_name}"
 
     def delete_blob(self, gcs_uri: str) -> None:
         """
