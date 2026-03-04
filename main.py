@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from config import settings
 from database_client import DatabaseClient
+from image_processor import ImageProcessor
 from models import GcsObjectMetadata, ImageType, ModerationResult, PubsubPushRequest, UploadEvent
 from storage_client import StorageClient
 from vision_client import VisionClient
@@ -26,18 +27,20 @@ logger = logging.getLogger(__name__)
 vision_client: VisionClient = None
 storage_client: StorageClient = None
 db_client: DatabaseClient = None
+image_processor: ImageProcessor = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler for startup/shutdown."""
-    global vision_client, storage_client, db_client
+    global vision_client, storage_client, db_client, image_processor
 
     # Initialize clients
     logger.info("Initializing moderation worker clients...")
     vision_client = VisionClient(threshold=settings.vision_api_threshold)
     storage_client = StorageClient()
     db_client = DatabaseClient(settings.database_url)
+    image_processor = ImageProcessor()
 
     logger.info(f"Worker configured for project: {settings.gcp_project}")
     logger.info(f"Subscribed to: {settings.pubsub_subscription}")
@@ -187,8 +190,18 @@ async def process_upload(request: PubsubPushRequest) -> JSONResponse:
 
         logger.info(f"GCS URI: {gcs_uri}")
 
-        # Step 1: Analyze image with Vision API
-        vision_result = vision_client.analyze_image(gcs_uri)
+        # Step 1: Download and resize image for Vision API analysis
+        logger.info("Downloading and resizing image for Vision API")
+        try:
+            resized_image_bytes = image_processor.resize_image_from_gcs(gcs_uri)
+        except Exception as resize_error:
+            logger.error(f"Failed to resize image: {resize_error}")
+            # Fallback to direct Vision API call if resize fails
+            logger.warning("Falling back to direct Vision API analysis (no resize)")
+            vision_result = vision_client.analyze_image(gcs_uri)
+        else:
+            # Use resized image bytes for Vision API (faster + cheaper)
+            vision_result = vision_client.analyze_image_from_bytes(resized_image_bytes)
 
         logger.info(f"Vision API result: approved={vision_result['approved']}")
 
@@ -248,6 +261,9 @@ async def process_upload(request: PubsubPushRequest) -> JSONResponse:
         )
 
         logger.info(f"Moved image to: {new_uri}")
+        
+        # Note: quarantine file is automatically deleted by move_blob (copy + delete)
+        logger.info(f"Cleaned up quarantine file: {gcs_uri}")
 
         # Step 4: Update database (only if image_id and image_type are valid)
         if image_id and image_type and len(image_id) > 10:  # Basic check for UUID-like format

@@ -16,6 +16,9 @@ psycopg2-binary>=2.9.0
 asyncpg>=0.29.0
 alembic>=1.13.0
 
+# Image Processing
+Pillow>=10.0.0
+
 # Utilities
 python-json-logger>=2.0.0
 httpx>=0.26.0

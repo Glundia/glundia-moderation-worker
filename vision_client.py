@@ -76,6 +76,61 @@ class VisionClient:
             },
         }
 
+    def analyze_image_from_bytes(self, image_bytes: bytes) -> dict:
+        """
+        Analyze an image from bytes using Vision API SafeSearch.
+        
+        This method is preferred over analyze_image() as it allows
+        preprocessing (resizing) before sending to Vision API,
+        reducing costs and improving performance.
+
+        Args:
+            image_bytes: Image data as bytes (JPEG format)
+
+        Returns:
+            Dictionary with SafeSearch results and moderation decision
+        """
+        # Create image from bytes
+        image = types.Image(content=image_bytes)
+
+        # Perform safe search detection
+        response = self.client.safe_search_detection(image=image)
+        safe_search = response.safe_search_annotation
+
+        # Parse results
+        result = {
+            "adult": safe_search.adult.name,
+            "violence": safe_search.violence.name,
+            "racy": safe_search.racy.name,
+            "spoof": safe_search.spoof.name,
+            "medical": safe_search.medical.name,
+        }
+
+        # Determine if image should be rejected
+        # Levels: UNKNOWN, VERY_UNLIKELY, UNLIKELY, POSSIBLE, LIKELY, VERY_LIKELY
+        reject_levels = {"LIKELY", "VERY_LIKELY"}
+
+        rejection_reason = None
+        if safe_search.adult.name in reject_levels:
+            rejection_reason = "adult_content"
+        elif safe_search.violence.name in reject_levels:
+            rejection_reason = "violence"
+        elif safe_search.racy.name in reject_levels:
+            rejection_reason = "racy"
+
+        is_approved = rejection_reason is None
+
+        return {
+            "result": result,
+            "approved": is_approved,
+            "rejection_reason": rejection_reason,
+            "confidence": {
+                "adult": safe_search.adult,
+                "violence": safe_search.violence,
+                "racy": safe_search.racy,
+            },
+        }
+
     def detect_logos(self, gcs_uri: str) -> list[dict]:
         """
         Detect logos in an image.
