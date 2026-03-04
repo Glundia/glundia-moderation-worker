@@ -93,7 +93,7 @@ jobs:
             --max-instances 10 \
             --timeout 300 \
             --no-allow-unauthenticated \
-            --set-env-vars GCP_PROJECT=${{ env.PROJECT_ID }},ENVIRONMENT=dev,PUBSUB_SUBSCRIPTION=moderation-worker-sub,QUARANTINE_BUCKET=${{ env.PROJECT_ID }}-uploads-quarantine,PUBLIC_BUCKET=${{ env.PROJECT_ID }}-images-public,REJECTED_BUCKET=${{ env.PROJECT_ID }}-images-rejected \
+            --set-env-vars GCP_PROJECT=${{ env.PROJECT_ID }},ENVIRONMENT=dev,PUBSUB_SUBSCRIPTION=moderation-worker-sub,QUARANTINE_BUCKET=${{ env.PROJECT_ID }}-uploads-quarantine,PUBLIC_BUCKET=${{ env.PROJECT_ID }}-images-public,PRIVATE_BUCKET=${{ env.PROJECT_ID }}-images-private,REJECTED_BUCKET=${{ env.PROJECT_ID }}-images-rejected \
             --update-secrets DATABASE_URL=database-url:latest \
             --quiet
       
