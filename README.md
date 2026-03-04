@@ -32,17 +32,54 @@ docker run -p 8080:8080 --env-file .env glundia-moderation-worker
 
 ## Pub/Sub Message Format
 
+The service receives GCS notification events from Pub/Sub when images are uploaded to the quarantine bucket:
+
 ```json
 {
   "message": {
     "data": "base64_encoded_json",
-    "messageId": "uuid"
+    "messageId": "uuid",
+    "publishTime": "2026-01-01T00:00:00Z"
   },
   "subscription": "projects/{project}/subscriptions/{subscription}"
 }
 ```
 
-The `data` field should contain:
+### GCS Notification Format (Production)
+
+The `data` field contains a GCS object notification:
+```json
+{
+  "kind": "storage#object",
+  "id": "bucket/object/1234567890",
+  "bucket": "glundia-dev-uploads-quarantine",
+  "name": "profiles/user-id/image-uuid.jpg",
+  "timeCreated": "2026-01-01T00:00:00Z",
+  "updated": "2026-01-01T00:00:00Z"
+}
+```
+
+### GCS Object Custom Metadata
+
+The API sets custom metadata on uploaded blobs:
+
+```python
+blob.metadata = {
+    "image_type": "profile_picture",  # or "prize_image", "raffle_image"
+    "image_id": "uuid",               # Database record ID
+    "user_id": "uuid",                # User who uploaded
+    "entity_id": "uuid"               # Optional: raffle_id or prize_id
+}
+```
+
+The worker reads this metadata to:
+1. Determine correct routing (private vs public bucket)
+2. Update the correct database record
+3. Organize rejected images by type
+
+### Legacy Custom Event Format (Deprecated)
+
+For backward compatibility, the worker still supports custom Pub/Sub messages:
 ```json
 {
   "image_id": "uuid",
@@ -53,6 +90,8 @@ The `data` field should contain:
   "destination_path": "optional/custom/path"
 }
 ```
+
+**Note:** This format is deprecated and should not be used in production. Use GCS metadata instead.
 
 ## Image Type Routing
 

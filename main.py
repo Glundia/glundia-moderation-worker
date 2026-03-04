@@ -105,26 +105,55 @@ async def process_upload(request: PubsubPushRequest) -> JSONResponse:
         destination_path = None
         
         if "kind" in message_data and message_data.get("kind") == "storage#object":
-            # GCS notification format (Phase 2 - testing only)
-            # In production, all uploads should come through API with proper image_type
+            # GCS notification format (Production flow)
+            # Metadata is read from the GCS blob custom metadata
             gcs_metadata = GcsObjectMetadata(**message_data)
             gcs_uri = f"gs://{gcs_metadata.bucket}/{gcs_metadata.name}"
-            image_id = None  # Will be looked up from filename or database
-            uploaded_by = None
             timestamp = gcs_metadata.timeCreated
             
             logger.info(f"Processing GCS notification for: {gcs_uri}")
             
-            # Try to extract image_id from filename (e.g., "uploads/IMAGE_ID.jpg")
-            filename_parts = gcs_metadata.name.split("/")
-            image_id = filename_parts[-1].split(".")[0] if filename_parts else gcs_metadata.name
-            
-            # Default to prize_image for GCS notifications (testing scenario)
-            image_type = ImageType.PRIZE_IMAGE
-            logger.warning("GCS notification without image_type, defaulting to prize_image")
+            # Fetch blob metadata to get custom metadata fields
+            try:
+                blob_metadata = storage_client.get_blob_metadata(gcs_uri)
+                custom_metadata = blob_metadata.get("metadata", {})
+                
+                # Extract metadata fields set by API during upload
+                image_type_str = custom_metadata.get("image_type", "prize_image")
+                image_id = custom_metadata.get("image_id")
+                uploaded_by = custom_metadata.get("user_id")
+                entity_id = custom_metadata.get("entity_id")
+                
+                # Convert image_type string to enum
+                try:
+                    image_type = ImageType(image_type_str)
+                    logger.info(f"Read image_type from metadata: {image_type_str}")
+                except ValueError:
+                    # Fallback to prize_image if invalid type
+                    image_type = ImageType.PRIZE_IMAGE
+                    logger.warning(f"Invalid image_type in metadata: {image_type_str}, defaulting to prize_image")
+                
+                if not image_id:
+                    # Fallback: try to extract from filename
+                    filename_parts = gcs_metadata.name.split("/")
+                    image_id = filename_parts[-1].split(".")[0] if filename_parts else gcs_metadata.name
+                    logger.warning(f"No image_id in metadata, extracted from filename: {image_id}")
+                
+                logger.info(f"Metadata read - image_id: {image_id}, type: {image_type}, user: {uploaded_by}")
+                
+            except Exception as metadata_error:
+                logger.warning(f"Could not read blob metadata: {metadata_error}")
+                # Fallback to defaults
+                filename_parts = gcs_metadata.name.split("/")
+                image_id = filename_parts[-1].split(".")[0] if filename_parts else gcs_metadata.name
+                uploaded_by = None
+                image_type = ImageType.PRIZE_IMAGE
+                logger.warning("Using fallback defaults for missing metadata")
             
         else:
-            # Custom UploadEvent format from API (Phase 3+)
+            # Custom UploadEvent format (Legacy support for testing)
+            # This path is kept for backward compatibility but should not be used in production
+            logger.warning("Received custom UploadEvent format - this is deprecated, use GCS metadata instead")
             upload_event = UploadEvent(**message_data)
             gcs_uri = upload_event.gcs_uri
             image_id = upload_event.image_id
@@ -133,7 +162,7 @@ async def process_upload(request: PubsubPushRequest) -> JSONResponse:
             image_type = upload_event.image_type
             destination_path = upload_event.destination_path
             
-            logger.info(f"Processing custom upload event for image: {image_id}, type: {image_type}")
+            logger.info(f"Processing legacy upload event for image: {image_id}, type: {image_type}")
 
         logger.info(f"GCS URI: {gcs_uri}")
 

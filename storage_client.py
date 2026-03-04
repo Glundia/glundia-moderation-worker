@@ -114,13 +114,13 @@ class StorageClient:
 
     def get_blob_metadata(self, gcs_uri: str) -> dict:
         """
-        Get metadata for a blob.
+        Get metadata for a blob, including custom metadata.
 
         Args:
             gcs_uri: Full GCS URI (gs://bucket/blob)
 
         Returns:
-            Dictionary with blob metadata
+            Dictionary with blob metadata including custom metadata fields
         """
         if not gcs_uri.startswith("gs://"):
             raise ValueError(f"Invalid GCS URI: {gcs_uri}")
@@ -131,12 +131,15 @@ class StorageClient:
 
         bucket = self.client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
+        
+        # Reload to get latest metadata from GCS
+        blob.reload()
 
-        metadata = blob.metadata or {}
+        custom_metadata = blob.metadata or {}
         return {
             "content_type": blob.content_type,
             "size": blob.size,
             "created": blob.time_created,
             "updated": blob.updated,
-            "metadata": metadata,
+            "metadata": custom_metadata,  # Custom metadata fields set by API
         }
