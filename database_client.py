@@ -28,6 +28,7 @@ class DatabaseClient:
     def update_moderation_status(
         self,
         image_id: str,
+        image_type: str,
         status: str,
         rejection_reason: Optional[str] = None,
         safe_search_result: Optional[dict] = None,
@@ -36,72 +37,144 @@ class DatabaseClient:
         Update the moderation status of an image.
 
         Args:
-            image_id: UUID of the image
+            image_id: UUID of the image record (primary key)
+            image_type: Type of image (profile_picture, raffle_image, prize_image)
             status: "approved", "rejected", or "pending"
             rejection_reason: Reason for rejection if applicable
-            safe_search_result: SafeSearch API result if applicable
+            safe_search_result: SafeSearch API result (stored in vision_scores JSONB field)
 
         Returns:
             True if update was successful
         """
-        query = text("""
-            UPDATE images
+        # Determine table name
+        table_map = {
+            "profile_picture": "profile_pictures",
+            "raffle_image": "raffle_images",
+            "prize_image": "prize_images",
+        }
+        
+        table_name = table_map.get(image_type)
+        if not table_name:
+            logger.error(f"Invalid image_type: {image_type}")
+            return False
+        
+        # Note: vision_scores should be JSONB, rejection_reason goes to rejection_reason column
+        query = text(f"""
+            UPDATE public.{table_name}
             SET moderation_status = :status,
-                moderation_rejection_reason = :rejection_reason,
-                moderation_safe_search = :safe_search,
-                moderated_at = NOW()
-            WHERE id = :image_id
+                rejection_reason = :rejection_reason,
+                vision_scores = :vision_scores::jsonb,
+                moderated_at = NOW(),
+                updated_at = NOW(),
+                approved_at = CASE WHEN :status = 'approved' THEN NOW() ELSE approved_at END
+            WHERE id::text = :image_id
         """)
 
-        with self.engine.connect() as conn:
-            result = conn.execute(
-                query,
-                {
-                    "status": status,
-                    "rejection_reason": rejection_reason,
-                    "safe_search": str(safe_search_result) if safe_search_result else None,
-                    "image_id": image_id,
-                },
-            )
-            conn.commit()
+        try:
+            with self.engine.connect() as conn:
+                # Convert safe_search_result dict to JSON string for JSONB column
+                import json
+                vision_scores_json = json.dumps(safe_search_result) if safe_search_result else None
+                
+                result = conn.execute(
+                    query,
+                    {
+                        "status": status,
+                        "rejection_reason": rejection_reason,
+                        "vision_scores": vision_scores_json,
+                        "image_id": image_id,
+                    },
+                )
+                conn.commit()
 
-        if result.rowcount == 0:
-            logger.warning(f"Image {image_id} not found in database")
+            if result.rowcount == 0:
+                logger.warning(f"Image {image_id} not found in {table_name}")
+                return False
+
+            logger.info(f"Updated image {image_id} in {table_name} to status {status}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to update image {image_id}: {e}")
             return False
 
-        logger.info(f"Updated image {image_id} status to {status}")
-        return True
-
-    def get_image(self, image_id: str) -> Optional[dict]:
+    def get_image_by_uuid(self, image_uuid: str) -> Optional[dict]:
         """
-        Get image details from database.
+        Get image details from database using image_uuid.
+        Searches across profile_pictures, raffle_images, and prize_images tables.
 
         Args:
-            image_id: UUID of the image
+            image_uuid: UUID of the image (from filename)
 
         Returns:
-            Dictionary with image details or None if not found
+            Dictionary with image details including image_type, or None if not found
         """
+        # Try profile_pictures first
         query = text("""
-            SELECT id, user_id, gcs_uri, moderation_status, created_at
-            FROM images
-            WHERE id = :image_id
+            SELECT id, user_id, image_uuid, moderation_status, 
+                   storage_path, 'profile_picture' as image_type
+            FROM public.profile_pictures
+            WHERE image_uuid::text = :image_uuid
         """)
-
+        
         with self.engine.connect() as conn:
-            result = conn.execute(query, {"image_id": image_id})
+            result = conn.execute(query, {"image_uuid": image_uuid})
             row = result.fetchone()
-
-        if row is None:
-            return None
-
-        return {
-            "id": str(row.id),
-            "user_id": str(row.user_id),
-            "gcs_uri": row.gcs_uri,
-            "moderation_status": row.moderation_status,
-            "created_at": row.created_at.isoformat() if row.created_at else None,
-        }
+            
+            if row:
+                return {
+                    "id": str(row.id),
+                    "user_id": str(row.user_id),
+                    "image_uuid": str(row.image_uuid),
+                    "image_type": "profile_picture",
+                    "moderation_status": row.moderation_status,
+                    "storage_path": row.storage_path,
+                }
+            
+            # Try raffle_images
+            query = text("""
+                SELECT id, raffle_id, image_uuid, moderation_status, 
+                       storage_path, 'raffle_image' as image_type
+                FROM public.raffle_images
+                WHERE image_uuid::text = :image_uuid
+            """)
+            
+            result = conn.execute(query, {"image_uuid": image_uuid})
+            row = result.fetchone()
+            
+            if row:
+                return {
+                    "id": str(row.id),
+                    "raffle_id": str(row.raffle_id),
+                    "image_uuid": str(row.image_uuid),
+                    "image_type": "raffle_image",
+                    "moderation_status": row.moderation_status,
+                    "storage_path": row.storage_path,
+                }
+            
+            # Try prize_images
+            query = text("""
+                SELECT id, prize_id, image_uuid, moderation_status, 
+                       storage_path, 'prize_image' as image_type
+                FROM public.prize_images
+                WHERE image_uuid::text = :image_uuid
+            """)
+            
+            result = conn.execute(query, {"image_uuid": image_uuid})
+            row = result.fetchone()
+            
+            if row:
+                return {
+                    "id": str(row.id),
+                    "prize_id": str(row.prize_id),
+                    "image_uuid": str(row.image_uuid),
+                    "image_type": "prize_image",
+                    "moderation_status": row.moderation_status,
+                    "storage_path": row.storage_path,
+                }
+        
+        logger.warning(f"Image with UUID {image_uuid} not found in any table")
+        return None
 
     def check_duplicate_hash(self, perceptual_hash: str) -> Optional[str]:
         """

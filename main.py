@@ -113,42 +113,63 @@ async def process_upload(request: PubsubPushRequest) -> JSONResponse:
             
             logger.info(f"Processing GCS notification for: {gcs_uri}")
             
-            # Fetch blob metadata to get custom metadata fields
+            # Extract image_uuid from filename (always present in GCS URI)
+            # Format: gs://bucket/path/to/IMAGE_UUID.ext
+            filename = gcs_metadata.name.split("/")[-1]
+            image_uuid = filename.rsplit(".", 1)[0] if "." in filename else filename
+            
+            logger.info(f"Extracted image_uuid from filename: {image_uuid}")
+            
+            # Try to fetch blob custom metadata first
+            image_type_str = None
+            image_id = None
+            uploaded_by = None
+            
             try:
                 blob_metadata = storage_client.get_blob_metadata(gcs_uri)
                 custom_metadata = blob_metadata.get("metadata", {})
                 
-                # Extract metadata fields set by API during upload
-                image_type_str = custom_metadata.get("image_type", "prize_image")
+                # Extract metadata fields set by API during upload (if available)
+                image_type_str = custom_metadata.get("image_type")
                 image_id = custom_metadata.get("image_id")
                 uploaded_by = custom_metadata.get("user_id")
-                entity_id = custom_metadata.get("entity_id")
                 
-                # Convert image_type string to enum
-                try:
-                    image_type = ImageType(image_type_str)
-                    logger.info(f"Read image_type from metadata: {image_type_str}")
-                except ValueError:
-                    # Fallback to prize_image if invalid type
-                    image_type = ImageType.PRIZE_IMAGE
-                    logger.warning(f"Invalid image_type in metadata: {image_type_str}, defaulting to prize_image")
-                
-                if not image_id:
-                    # Fallback: try to extract from filename
-                    filename_parts = gcs_metadata.name.split("/")
-                    image_id = filename_parts[-1].split(".")[0] if filename_parts else gcs_metadata.name
-                    logger.warning(f"No image_id in metadata, extracted from filename: {image_id}")
-                
-                logger.info(f"Metadata read - image_id: {image_id}, type: {image_type}, user: {uploaded_by}")
+                if image_type_str:
+                    logger.info(f"Read from GCS metadata - image_type: {image_type_str}, image_id: {image_id}")
                 
             except Exception as metadata_error:
-                logger.warning(f"Could not read blob metadata: {metadata_error}")
-                # Fallback to defaults
-                filename_parts = gcs_metadata.name.split("/")
-                image_id = filename_parts[-1].split(".")[0] if filename_parts else gcs_metadata.name
-                uploaded_by = None
+                logger.warning(f"Could not read GCS blob metadata: {metadata_error}")
+            
+            # If metadata is missing, look up in database using image_uuid
+            if not image_type_str or not image_id:
+                logger.info(f"Missing metadata, looking up image_uuid {image_uuid} in database")
+                try:
+                    db_record = db_client.get_image_by_uuid(image_uuid)
+                    if db_record:
+                        image_type_str = db_record["image_type"]
+                        image_id = db_record["id"]
+                        uploaded_by = db_record.get("user_id")
+                        logger.info(f"Found in database - type: {image_type_str}, id: {image_id}")
+                    else:
+                        logger.warning(f"Image UUID {image_uuid} not found in database")
+                except Exception as db_error:
+                    logger.warning(f"Database lookup failed: {db_error}")
+            
+            # Convert image_type string to enum (with fallback)
+            if image_type_str:
+                try:
+                    image_type = ImageType(image_type_str)
+                except ValueError:
+                    logger.warning(f"Invalid image_type: {image_type_str}, defaulting to prize_image")
+                    image_type = ImageType.PRIZE_IMAGE
+            else:
+                logger.warning("No image_type found, defaulting to prize_image")
                 image_type = ImageType.PRIZE_IMAGE
-                logger.warning("Using fallback defaults for missing metadata")
+            
+            # Final fallback for image_id
+            if not image_id:
+                logger.warning(f"No image_id found, using image_uuid as fallback: {image_uuid}")
+                image_id = image_uuid
             
         else:
             # Custom UploadEvent format (Legacy support for testing)
@@ -228,16 +249,20 @@ async def process_upload(request: PubsubPushRequest) -> JSONResponse:
 
         logger.info(f"Moved image to: {new_uri}")
 
-        # Step 4: Update database (only if image_id is valid UUID)
-        if image_id and len(image_id) > 10:  # Basic check for UUID-like format
+        # Step 4: Update database (only if image_id and image_type are valid)
+        if image_id and image_type and len(image_id) > 10:  # Basic check for UUID-like format
             try:
+                # Convert ImageType enum to string for database client
+                image_type_str = image_type.value
+                
                 db_client.update_moderation_status(
                     image_id=image_id,
+                    image_type=image_type_str,
                     status=status,
                     rejection_reason=rejection_reason,
                     safe_search_result=vision_result.get("result"),
                 )
-                logger.info(f"Updated database for image {image_id}")
+                logger.info(f"Updated database for image {image_id} ({image_type_str})")
             except Exception as db_error:
                 logger.warning(f"Could not update database: {db_error}")
 
