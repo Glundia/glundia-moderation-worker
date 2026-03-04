@@ -1,0 +1,110 @@
+name: Deploy Moderation Worker to PROD
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: glundia
+  REGION: us-central1
+  SERVICE_NAME: moderation-worker
+  REPOSITORY: glundia-moderation-worker
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+
+      - name: Run unit tests
+        run: |
+          export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+          pytest tests/unit/ -v --cov=. --cov-report=xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          flags: unittests
+
+  build-and-deploy:
+    name: Build and Deploy to PROD
+    needs: test
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      id-token: write
+    
+    environment:
+      name: production
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER_PROD }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT_PROD }}
+      
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+      
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+      
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
+                       -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:latest \
+                       .
+      
+      - name: Push to Artifact Registry
+        run: |
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:latest
+      
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --platform managed \
+            --project ${{ env.PROJECT_ID }} \
+            --service-account moderation-worker@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
+            --memory 1Gi \
+            --cpu 2 \
+            --min-instances 1 \
+            --max-instances 100 \
+            --timeout 300 \
+            --no-allow-unauthenticated \
+            --set-env-vars GCP_PROJECT=${{ env.PROJECT_ID }},ENVIRONMENT=prod,PUBSUB_SUBSCRIPTION=moderation-worker-sub,QUARANTINE_BUCKET=${{ env.PROJECT_ID }}-uploads-quarantine,PUBLIC_BUCKET=${{ env.PROJECT_ID }}-images-public,REJECTED_BUCKET=${{ env.PROJECT_ID }}-images-rejected \
+            --update-secrets DATABASE_URL=database-url:latest \
+            --quiet
+      
+      - name: Output Service URL
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }} \
+            --format 'value(status.url)')
+          echo "✅ PROD Moderation Worker deployed to: $SERVICE_URL"
+          echo "🔗 Health check: curl $SERVICE_URL/health"
