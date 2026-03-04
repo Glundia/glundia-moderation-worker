@@ -5,7 +5,7 @@ import json
 import pytest
 from unittest.mock import MagicMock, patch
 
-from models import PubsubPushRequest, PubsubMessage, UploadEvent
+from models import ImageType, PubsubPushRequest, PubsubMessage, UploadEvent
 from vision_client import VisionClient
 from storage_client import StorageClient
 from database_client import DatabaseClient
@@ -21,9 +21,33 @@ class TestModels:
             gcs_uri="gs://bucket/image.jpg",
             uploaded_by="223e4567-e89b-12d3-a456-426614174000",
             timestamp="2026-01-01T00:00:00Z",
+            image_type=ImageType.PRIZE_IMAGE,
         )
         assert event.image_id == "123e4567-e89b-12d3-a456-426614174000"
         assert event.gcs_uri == "gs://bucket/image.jpg"
+        assert event.image_type == ImageType.PRIZE_IMAGE
+
+    def test_upload_event_profile_picture(self):
+        """Test UploadEvent with profile_picture type."""
+        event = UploadEvent(
+            image_id="123e4567-e89b-12d3-a456-426614174000",
+            gcs_uri="gs://bucket/profile.jpg",
+            uploaded_by="223e4567-e89b-12d3-a456-426614174000",
+            timestamp="2026-01-01T00:00:00Z",
+            image_type=ImageType.PROFILE_PICTURE,
+        )
+        assert event.image_type == ImageType.PROFILE_PICTURE
+
+    def test_upload_event_raffle_image(self):
+        """Test UploadEvent with raffle_image type."""
+        event = UploadEvent(
+            image_id="123e4567-e89b-12d3-a456-426614174000",
+            gcs_uri="gs://bucket/raffle.jpg",
+            uploaded_by="223e4567-e89b-12d3-a456-426614174000",
+            timestamp="2026-01-01T00:00:00Z",
+            image_type=ImageType.RAFFLE_IMAGE,
+        )
+        assert event.image_type == ImageType.RAFFLE_IMAGE
 
     def test_pubsub_message_valid(self):
         """Test PubsubMessage model."""
@@ -44,7 +68,8 @@ class TestModels:
                         "image_id": "123",
                         "gcs_uri": "gs://bucket/img.jpg",
                         "uploaded_by": "user1",
-                        "timestamp": "2026-01-01T00:00:00Z"
+                        "timestamp": "2026-01-01T00:00:00Z",
+                        "image_type": "prize_image"
                     }).encode()
                 ).decode(),
                 message_id="msg123",

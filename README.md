@@ -23,9 +23,10 @@ docker run -p 8080:8080 --env-file .env glundia-moderation-worker
 | `GCP_PROJECT` | Yes | GCP project ID |
 | `PUBSUB_SUBSCRIPTION` | Yes | Pub/Sub subscription name |
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `QUARANTINE_BUCKET` | Yes | GCS bucket for untrusted uploads |
-| `PUBLIC_BUCKET` | Yes | GCS bucket for approved images |
-| `REJECTED_BUCKET` | Yes | GCS bucket for rejected images |
+| `QUARANTINE_BUCKET` | Yes | GCS bucket for untrusted uploads (flat structure) |
+| `PUBLIC_BUCKET` | Yes | GCS bucket for approved images (prize_images/, raffle_images/) |
+| `PRIVATE_BUCKET` | Yes | GCS bucket for private images (profile_pictures/ - flat) |
+| `REJECTED_BUCKET` | Yes | GCS bucket for rejected images (organized by type) |
 | `VISION_API_THRESHOLD` | No | SafeSearch threshold (default: 0.7) |
 | `ENVIRONMENT` | No | dev/staging/prod |
 
@@ -47,9 +48,25 @@ The `data` field should contain:
   "image_id": "uuid",
   "gcs_uri": "gs://bucket/object.jpg",
   "uploaded_by": "user_uuid",
-  "timestamp": "2026-01-01T00:00:00Z"
+  "timestamp": "2026-01-01T00:00:00Z",
+  "image_type": "profile_picture|prize_image|raffle_image",
+  "destination_path": "optional/custom/path"
 }
 ```
+
+## Image Type Routing
+
+The service routes images based on `image_type`:
+
+**Approved Images:**
+- `profile_picture` → `PRIVATE_BUCKET/` (flat structure)
+- `prize_image` → `PUBLIC_BUCKET/prize_images/`
+- `raffle_image` → `PUBLIC_BUCKET/raffle_images/`
+
+**Rejected Images:**
+- `profile_picture` → `REJECTED_BUCKET/profile_pictures/`
+- `prize_image` → `REJECTED_BUCKET/prize_images/`
+- `raffle_image` → `REJECTED_BUCKET/raffle_images/`
 
 ## Development
 

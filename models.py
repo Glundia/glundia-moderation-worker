@@ -1,7 +1,16 @@
 """Pub/Sub message models."""
 
+from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field
+
+
+class ImageType(str, Enum):
+    """Image type enumeration."""
+
+    PROFILE_PICTURE = "profile_picture"
+    PRIZE_IMAGE = "prize_image"
+    RAFFLE_IMAGE = "raffle_image"
 
 
 class GcsObjectMetadata(BaseModel):
@@ -32,6 +41,8 @@ class UploadEvent(BaseModel):
     gcs_uri: str = Field(..., description="GCS URI of the uploaded image")
     uploaded_by: str = Field(..., description="UUID of the user who uploaded")
     timestamp: str = Field(..., description="ISO timestamp of upload")
+    image_type: ImageType = Field(..., description="Type of image (profile_picture, prize_image, raffle_image)")
+    destination_path: Optional[str] = Field(None, description="Optional destination path in approved bucket")
 
 
 class PubsubMessage(BaseModel):

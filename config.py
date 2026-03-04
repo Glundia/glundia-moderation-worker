@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     # Storage buckets
     quarantine_bucket: str
     public_bucket: str
+    private_bucket: str
     rejected_bucket: str
 
     # Database
