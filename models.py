@@ -49,8 +49,10 @@ class PubsubMessage(BaseModel):
     """Pub/Sub message wrapper."""
 
     data: str = Field(..., description="Base64-encoded JSON event data")
-    message_id: str = Field(..., description="Pub/Sub message ID")
-    publish_time: Optional[str] = Field(None, description="Publish timestamp")
+    message_id: str = Field(..., alias="messageId", description="Pub/Sub message ID")
+    publish_time: Optional[str] = Field(None, alias="publishTime", description="Publish timestamp")
+    
+    model_config = {"populate_by_name": True}  # Accept both snake_case and camelCase
 
 
 class PubsubPushRequest(BaseModel):
