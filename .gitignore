@@ -38,6 +38,7 @@ htmlcov/
 # Environment
 .env
 .env.local
+.envrc
 
 # Docker
 *.log
