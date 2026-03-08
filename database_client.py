@@ -66,12 +66,12 @@ class DatabaseClient:
             UPDATE public.{table_name}
             SET moderation_status = :status,
                 rejection_reason = :rejection_reason,
-                vision_scores = :vision_scores::jsonb,
+                vision_scores = CAST(:vision_scores AS jsonb),
                 storage_path = COALESCE(:new_storage_path, storage_path),
                 moderated_at = NOW(),
                 updated_at = NOW(),
-                approved_at = CASE WHEN :status = 'approved' THEN NOW() ELSE approved_at END
-            WHERE id::text = :image_id
+                approved_at = CASE WHEN CAST(:status_check AS text) = 'approved' THEN NOW() ELSE approved_at END
+            WHERE CAST(id AS text) = :image_id
         """)
 
         try:
@@ -88,6 +88,7 @@ class DatabaseClient:
                         "vision_scores": vision_scores_json,
                         "new_storage_path": new_storage_path,
                         "image_id": image_id,
+                        "status_check": status,
                     },
                 )
                 conn.commit()
