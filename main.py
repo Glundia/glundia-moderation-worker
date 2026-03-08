@@ -262,6 +262,10 @@ async def process_upload(request: PubsubPushRequest) -> JSONResponse:
 
         logger.info(f"Moved image to: {new_uri}")
         
+        # Extract new storage path from GCS URI (format: gs://bucket/path -> bucket/path)
+        new_storage_path = new_uri.replace("gs://", "")
+        logger.info(f"New storage path for database: {new_storage_path}")
+        
         # Note: quarantine file is automatically deleted by move_blob (copy + delete)
         logger.info(f"Cleaned up quarantine file: {gcs_uri}")
 
@@ -277,6 +281,7 @@ async def process_upload(request: PubsubPushRequest) -> JSONResponse:
                     status=status,
                     rejection_reason=rejection_reason,
                     safe_search_result=vision_result.get("result"),
+                    new_storage_path=new_storage_path,
                 )
                 logger.info(f"Updated database for image {image_id} ({image_type_str})")
             except Exception as db_error:

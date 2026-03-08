@@ -32,6 +32,7 @@ class DatabaseClient:
         status: str,
         rejection_reason: Optional[str] = None,
         safe_search_result: Optional[dict] = None,
+        new_storage_path: Optional[str] = None,
     ) -> bool:
         """
         Update the moderation status of an image.
@@ -42,6 +43,7 @@ class DatabaseClient:
             status: "approved", "rejected", or "pending"
             rejection_reason: Reason for rejection if applicable
             safe_search_result: SafeSearch API result (stored in vision_scores JSONB field)
+            new_storage_path: New storage path after moving image (format: bucket_name/path/to/file.jpg)
 
         Returns:
             True if update was successful
@@ -59,11 +61,13 @@ class DatabaseClient:
             return False
         
         # Note: vision_scores should be JSONB, rejection_reason goes to rejection_reason column
+        # Update storage_path when new path is provided (after moving image between buckets)
         query = text(f"""
             UPDATE public.{table_name}
             SET moderation_status = :status,
                 rejection_reason = :rejection_reason,
                 vision_scores = :vision_scores::jsonb,
+                storage_path = COALESCE(:new_storage_path, storage_path),
                 moderated_at = NOW(),
                 updated_at = NOW(),
                 approved_at = CASE WHEN :status = 'approved' THEN NOW() ELSE approved_at END
@@ -82,6 +86,7 @@ class DatabaseClient:
                         "status": status,
                         "rejection_reason": rejection_reason,
                         "vision_scores": vision_scores_json,
+                        "new_storage_path": new_storage_path,
                         "image_id": image_id,
                     },
                 )
