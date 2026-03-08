@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     # Moderation
     vision_api_threshold: float = 0.7
+    max_concurrent_moderations: int = 10  # Maximum number of parallel image moderations
 
     model_config = SettingsConfigDict(
         env_file=".env",

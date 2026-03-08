@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from config import settings
 from database_client import DatabaseClient
 from image_processor import ImageProcessor
+from image_moderator import ImageModerator, ModerationTask
 from models import GcsObjectMetadata, ImageType, ModerationResult, PubsubPushRequest, UploadEvent
 from storage_client import StorageClient
 from vision_client import VisionClient
@@ -28,12 +29,13 @@ vision_client: VisionClient = None
 storage_client: StorageClient = None
 db_client: DatabaseClient = None
 image_processor: ImageProcessor = None
+image_moderator: ImageModerator = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler for startup/shutdown."""
-    global vision_client, storage_client, db_client, image_processor
+    global vision_client, storage_client, db_client, image_processor, image_moderator
 
     # Initialize clients
     logger.info("Initializing moderation worker clients...")
@@ -41,9 +43,20 @@ async def lifespan(app: FastAPI):
     storage_client = StorageClient()
     db_client = DatabaseClient(settings.database_url)
     image_processor = ImageProcessor()
+    
+    # Initialize the parallel image moderator
+    max_concurrent = getattr(settings, 'max_concurrent_moderations', 10)
+    image_moderator = ImageModerator(
+        vision_client=vision_client,
+        storage_client=storage_client,
+        db_client=db_client,
+        image_processor=image_processor,
+        max_concurrent=max_concurrent
+    )
 
     logger.info(f"Worker configured for project: {settings.gcp_project}")
     logger.info(f"Subscribed to: {settings.pubsub_subscription}")
+    logger.info(f"Max concurrent moderations: {max_concurrent}")
     logger.info(f"Buckets - Quarantine: {settings.quarantine_bucket}, "
                 f"Public: {settings.public_bucket}, "
                 f"Private: {settings.private_bucket}, "
@@ -103,205 +116,38 @@ async def process_upload(request: PubsubPushRequest) -> JSONResponse:
         # Decode the message data
         message_data = json.loads(base64.b64decode(request.message.data).decode())
         
-        # Detect message format and extract relevant data
-        image_type = None  # Will be set based on message format
-        destination_path = None
+        # Parse message and create moderation task
+        task = await _parse_moderation_task(message_data)
         
-        if "kind" in message_data and message_data.get("kind") == "storage#object":
-            # GCS notification format (Production flow)
-            # Metadata is read from the GCS blob custom metadata
-            gcs_metadata = GcsObjectMetadata(**message_data)
-            gcs_uri = f"gs://{gcs_metadata.bucket}/{gcs_metadata.name}"
-            timestamp = gcs_metadata.timeCreated
-            
-            logger.info(f"Processing GCS notification for: {gcs_uri}")
-            
-            # Extract image_uuid from filename (always present in GCS URI)
-            # Format: gs://bucket/path/to/IMAGE_UUID.ext
-            filename = gcs_metadata.name.split("/")[-1]
-            image_uuid = filename.rsplit(".", 1)[0] if "." in filename else filename
-            
-            logger.info(f"Extracted image_uuid from filename: {image_uuid}")
-            
-            # Try to fetch blob custom metadata first
-            image_type_str = None
-            image_id = None
-            uploaded_by = None
-            
-            try:
-                blob_metadata = storage_client.get_blob_metadata(gcs_uri)
-                custom_metadata = blob_metadata.get("metadata", {})
-                
-                # Extract metadata fields set by API during upload (if available)
-                image_type_str = custom_metadata.get("image_type")
-                image_id = custom_metadata.get("image_id")
-                uploaded_by = custom_metadata.get("user_id")
-                
-                if image_type_str:
-                    logger.info(f"Read from GCS metadata - image_type: {image_type_str}, image_id: {image_id}")
-                
-            except Exception as metadata_error:
-                logger.warning(f"Could not read GCS blob metadata: {metadata_error}")
-            
-            # If metadata is missing, look up in database using image_uuid
-            if not image_type_str or not image_id:
-                logger.info(f"Missing metadata, looking up image_uuid {image_uuid} in database")
-                try:
-                    db_record = db_client.get_image_by_uuid(image_uuid)
-                    if db_record:
-                        image_type_str = db_record["image_type"]
-                        image_id = db_record["id"]
-                        uploaded_by = db_record.get("user_id")
-                        logger.info(f"Found in database - type: {image_type_str}, id: {image_id}")
-                    else:
-                        logger.warning(f"Image UUID {image_uuid} not found in database")
-                except Exception as db_error:
-                    logger.warning(f"Database lookup failed: {db_error}")
-            
-            # Convert image_type string to enum (with fallback)
-            if image_type_str:
-                try:
-                    image_type = ImageType(image_type_str)
-                except ValueError:
-                    logger.warning(f"Invalid image_type: {image_type_str}, defaulting to prize_image")
-                    image_type = ImageType.PRIZE_IMAGE
-            else:
-                logger.warning("No image_type found, defaulting to prize_image")
-                image_type = ImageType.PRIZE_IMAGE
-            
-            # Final fallback for image_id
-            if not image_id:
-                logger.warning(f"No image_id found, using image_uuid as fallback: {image_uuid}")
-                image_id = image_uuid
-            
-        else:
-            # Custom UploadEvent format (Legacy support for testing)
-            # This path is kept for backward compatibility but should not be used in production
-            logger.warning("Received custom UploadEvent format - this is deprecated, use GCS metadata instead")
-            upload_event = UploadEvent(**message_data)
-            gcs_uri = upload_event.gcs_uri
-            image_id = upload_event.image_id
-            uploaded_by = upload_event.uploaded_by
-            timestamp = upload_event.timestamp
-            image_type = upload_event.image_type
-            destination_path = upload_event.destination_path
-            
-            logger.info(f"Processing legacy upload event for image: {image_id}, type: {image_type}")
-
-        logger.info(f"GCS URI: {gcs_uri}")
-
-        # Step 1: Download and resize image for Vision API analysis
-        logger.info("Downloading and resizing image for Vision API")
-        try:
-            resized_image_bytes = image_processor.resize_image_from_gcs(gcs_uri)
-        except Exception as resize_error:
-            logger.error(f"Failed to resize image: {resize_error}")
-            # Fallback to direct Vision API call if resize fails
-            logger.warning("Falling back to direct Vision API analysis (no resize)")
-            vision_result = vision_client.analyze_image(gcs_uri)
-        else:
-            # Use resized image bytes for Vision API (faster + cheaper)
-            vision_result = vision_client.analyze_image_from_bytes(resized_image_bytes)
-
-        logger.info(f"Vision API result: approved={vision_result['approved']}")
-
-        # Step 2: Determine destination bucket, path, and status based on image_type and moderation result
-        if vision_result["approved"]:
-            status = "approved"
-            rejection_reason = None
-            
-            # Route to correct bucket based on image_type
-            if image_type == ImageType.PROFILE_PICTURE:
-                destination_bucket = settings.private_bucket
-                # Profile pictures go to private bucket (flat structure)
-                # Extract filename from source URI
-                filename = gcs_uri.split("/")[-1]
-                destination_blob_name = filename
-            elif image_type == ImageType.PRIZE_IMAGE:
-                destination_bucket = settings.public_bucket
-                # Prize images go to public bucket under prize_images/
-                filename = gcs_uri.split("/")[-1]
-                destination_blob_name = f"prize_images/{filename}"
-            elif image_type == ImageType.RAFFLE_IMAGE:
-                destination_bucket = settings.public_bucket
-                # Raffle images go to public bucket under raffle_images/
-                filename = gcs_uri.split("/")[-1]
-                destination_blob_name = f"raffle_images/{filename}"
-            else:
-                # Fallback to public bucket if type unknown
-                logger.warning(f"Unknown image_type: {image_type}, defaulting to public bucket")
-                destination_bucket = settings.public_bucket
-                filename = gcs_uri.split("/")[-1]
-                destination_blob_name = filename
-                
-            logger.info(f"Approved image will move to: gs://{destination_bucket}/{destination_blob_name}")
-        else:
-            destination_bucket = settings.rejected_bucket
-            status = "rejected"
-            rejection_reason = vision_result["rejection_reason"]
-            
-            # Organize rejected images by type
-            filename = gcs_uri.split("/")[-1]
-            if image_type == ImageType.PROFILE_PICTURE:
-                destination_blob_name = f"profile_pictures/{filename}"
-            elif image_type == ImageType.PRIZE_IMAGE:
-                destination_blob_name = f"prize_images/{filename}"
-            elif image_type == ImageType.RAFFLE_IMAGE:
-                destination_blob_name = f"raffle_images/{filename}"
-            else:
-                destination_blob_name = filename
-                
-            logger.info(f"Rejected image will move to: gs://{destination_bucket}/{destination_blob_name}")
-
-        # Step 3: Move image to appropriate bucket with correct path
-        new_uri = storage_client.move_blob(
-            source_uri=gcs_uri,
-            destination_bucket=destination_bucket,
-            destination_blob_name=destination_blob_name,
+        # Process image using parallel moderator
+        result = await image_moderator.moderate_image(task)
+        
+        # Check for errors
+        if result.error:
+            logger.error(f"Moderation failed for {result.image_id}: {result.error}")
+            return JSONResponse(
+                content={
+                    "status": "error",
+                    "message": result.error,
+                },
+                status_code=500,
+            )
+        
+        # Create response
+        moderation_result = ModerationResult(
+            image_id=result.image_id,
+            status=result.status,
+            safe_search=result.vision_scores,
+            rejection_reason=result.rejection_reason,
+            moved_to_bucket=result.new_storage_path.split("/")[0],  # Extract bucket name
         )
 
-        logger.info(f"Moved image to: {new_uri}")
-        
-        # Extract new storage path from GCS URI (format: gs://bucket/path -> bucket/path)
-        new_storage_path = new_uri.replace("gs://", "")
-        logger.info(f"New storage path for database: {new_storage_path}")
-        
-        # Note: quarantine file is automatically deleted by move_blob (copy + delete)
-        logger.info(f"Cleaned up quarantine file: {gcs_uri}")
-
-        # Step 4: Update database (only if image_id and image_type are valid)
-        if image_id and image_type and len(image_id) > 10:  # Basic check for UUID-like format
-            try:
-                # Convert ImageType enum to string for database client
-                image_type_str = image_type.value
-                
-                db_client.update_moderation_status(
-                    image_id=image_id,
-                    image_type=image_type_str,
-                    status=status,
-                    rejection_reason=rejection_reason,
-                    safe_search_result=vision_result.get("result"),
-                    new_storage_path=new_storage_path,
-                )
-                logger.info(f"Updated database for image {image_id} ({image_type_str})")
-            except Exception as db_error:
-                logger.warning(f"Could not update database: {db_error}")
-
-        # Step 5: Create result
-        result = ModerationResult(
-            image_id=image_id or "unknown",
-            status=status,
-            safe_search=vision_result.get("result"),
-            rejection_reason=rejection_reason,
-            moved_to_bucket=destination_bucket,
-        )
-
-        logger.info(f"Successfully processed image {image_id}: {status}")
+        logger.info(f"Successfully processed image {result.image_id}: {result.status}")
 
         return JSONResponse(
             content={
                 "status": "success",
-                "result": result.model_dump(),
+                "result": moderation_result.model_dump(),
             },
             status_code=200,
         )
@@ -320,6 +166,103 @@ async def process_upload(request: PubsubPushRequest) -> JSONResponse:
             },
             status_code=500,
         )
+
+
+async def _parse_moderation_task(message_data: dict) -> ModerationTask:
+    """Parse Pub/Sub message and create a ModerationTask
+    
+    Supports both GCS notification format and legacy custom format.
+    
+    Args:
+        message_data: Decoded Pub/Sub message data
+        
+    Returns:
+        ModerationTask ready for processing
+    """
+    if "kind" in message_data and message_data.get("kind") == "storage#object":
+        # GCS notification format (Production flow)
+        gcs_metadata = GcsObjectMetadata(**message_data)
+        gcs_uri = f"gs://{gcs_metadata.bucket}/{gcs_metadata.name}"
+        
+        logger.info(f"Processing GCS notification for: {gcs_uri}")
+        
+        # Extract image_uuid from filename (always present in GCS URI)
+        filename = gcs_metadata.name.split("/")[-1]
+        image_uuid = filename.rsplit(".", 1)[0] if "." in filename else filename
+        
+        logger.debug(f"Extracted image_uuid from filename: {image_uuid}")
+        
+        # Try to fetch blob custom metadata first
+        image_type_str = None
+        image_id = None
+        uploaded_by = None
+        
+        try:
+            blob_metadata = storage_client.get_blob_metadata(gcs_uri)
+            custom_metadata = blob_metadata.get("metadata", {})
+            
+            image_type_str = custom_metadata.get("image_type")
+            image_id = custom_metadata.get("image_id")
+            uploaded_by = custom_metadata.get("user_id")
+            
+            if image_type_str:
+                logger.debug(f"Read from GCS metadata - image_type: {image_type_str}, image_id: {image_id}")
+        except Exception as metadata_error:
+            logger.warning(f"Could not read GCS blob metadata: {metadata_error}")
+        
+        # If metadata is missing, look up in database using image_uuid
+        if not image_type_str or not image_id:
+            logger.debug(f"Missing metadata, looking up image_uuid {image_uuid} in database")
+            try:
+                db_record = db_client.get_image_by_uuid(image_uuid)
+                if db_record:
+                    image_type_str = db_record["image_type"]
+                    image_id = db_record["id"]
+                    uploaded_by = db_record.get("user_id")
+                    logger.debug(f"Found in database - type: {image_type_str}, id: {image_id}")
+                else:
+                    logger.warning(f"Image UUID {image_uuid} not found in database")
+            except Exception as db_error:
+                logger.warning(f"Database lookup failed: {db_error}")
+        
+        # Convert image_type string to enum (with fallback)
+        if image_type_str:
+            try:
+                image_type = ImageType(image_type_str)
+            except ValueError:
+                logger.warning(f"Invalid image_type: {image_type_str}, defaulting to prize_image")
+                image_type = ImageType.PRIZE_IMAGE
+        else:
+            logger.warning("No image_type found, defaulting to prize_image")
+            image_type = ImageType.PRIZE_IMAGE
+        
+        # Final fallback for image_id
+        if not image_id:
+            logger.warning(f"No image_id found, using image_uuid as fallback: {image_uuid}")
+            image_id = image_uuid
+        
+    else:
+        # Custom UploadEvent format (Legacy support for testing)
+        logger.warning("Received custom UploadEvent format - this is deprecated")
+        upload_event = UploadEvent(**message_data)
+        gcs_uri = upload_event.gcs_uri
+        image_id = upload_event.image_id
+        uploaded_by = upload_event.uploaded_by
+        image_type = upload_event.image_type
+        
+        # Extract image_uuid from GCS URI
+        filename = gcs_uri.split("/")[-1]
+        image_uuid = filename.rsplit(".", 1)[0] if "." in filename else filename
+        
+        logger.debug(f"Processing legacy upload event for image: {image_id}, type: {image_type}")
+    
+    return ModerationTask(
+        gcs_uri=gcs_uri,
+        image_id=image_id,
+        image_uuid=image_uuid,
+        image_type=image_type,
+        uploaded_by=uploaded_by,
+    )
 
 
 if __name__ == "__main__":
