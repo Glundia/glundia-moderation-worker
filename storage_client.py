@@ -11,9 +11,13 @@ logger = logging.getLogger(__name__)
 class StorageClient:
     """Google Cloud Storage client for image operations."""
 
-    def __init__(self):
-        """Initialize GCS client."""
-        self.client = storage.Client()
+    def __init__(self, project: Optional[str] = None):
+        """Initialize GCS client.
+
+        Args:
+            project: GCP project ID. If not provided, will attempt to detect from environment.
+        """
+        self.client = storage.Client(project=project)
 
     def move_blob(
         self,
@@ -131,7 +135,7 @@ class StorageClient:
 
         bucket = self.client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
-        
+
         # Reload to get latest metadata from GCS
         blob.reload()
 

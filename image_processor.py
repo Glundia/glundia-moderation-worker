@@ -19,9 +19,13 @@ JPEG_QUALITY = 85
 class ImageProcessor:
     """Handles image resizing and optimization for Vision API."""
 
-    def __init__(self):
-        """Initialize GCS client for image operations."""
-        self.storage_client = storage.Client()
+    def __init__(self, project: str = None):
+        """Initialize GCS client for image operations.
+
+        Args:
+            project: GCP project ID. If not provided, will attempt to detect from environment.
+        """
+        self.storage_client = storage.Client(project=project)
 
     def resize_image_from_gcs(
         self, gcs_uri: str, max_width: int = MAX_WIDTH, max_height: int = MAX_HEIGHT
@@ -87,7 +91,9 @@ class ImageProcessor:
             rgb_image = Image.new("RGB", image.size, (255, 255, 255))
             if image.mode == "P":
                 image = image.convert("RGBA")
-            rgb_image.paste(image, mask=image.split()[-1] if image.mode in ("RGBA", "LA") else None)
+            rgb_image.paste(
+                image, mask=image.split()[-1] if image.mode in ("RGBA", "LA") else None
+            )
             image = rgb_image
 
         # Save to bytes buffer as JPEG
@@ -96,7 +102,9 @@ class ImageProcessor:
         output_bytes = output_buffer.getvalue()
 
         resized_size_kb = len(output_bytes) / 1024
-        reduction_percent = ((original_size_kb - resized_size_kb) / original_size_kb) * 100
+        reduction_percent = (
+            (original_size_kb - resized_size_kb) / original_size_kb
+        ) * 100
 
         logger.info(
             f"Processed image: {resized_size_kb:.2f} KB "

@@ -48,9 +48,9 @@ async def lifespan(app: FastAPI):
     # Initialize clients
     logger.info("Initializing moderation worker clients...")
     vision_client = VisionClient(threshold=settings.vision_api_threshold)
-    storage_client = StorageClient()
+    storage_client = StorageClient(project=settings.gcp_project)
     db_client = DatabaseClient(settings.database_url)
-    image_processor = ImageProcessor()
+    image_processor = ImageProcessor(project=settings.gcp_project)
 
     # Initialize the parallel image moderator
     max_concurrent = getattr(settings, "max_concurrent_moderations", 10)
